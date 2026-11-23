@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Muzicer">
+<meta name="theme-color" content="#0d0e12">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+<title>Muzicer</title>
+</head>
+<body>
+<header class="top">
+  <h1 id="title">Songs</h1>
+  <button class="icon-btn accent" data-action="import" aria-label="Import audio" data-icon="plus"></button>
+</header>
+
+<div id="install" class="install hidden">
+  <span data-icon="share"></span>
+  <div>Install Muzicer: tap <b>Share</b> then <b>Add to Home Screen</b>. It works offline, like a real app.</div>
+  <button class="icon-btn small" data-action="install-close" aria-label="Dismiss" data-icon="x"></button>
+</div>
+
+<main id="main"></main>
+
+<div id="mini" class="mini hidden" data-action="open-now">
+  <div class="art" id="miniArt"></div>
+  <div class="meta"><div class="t" id="miniTitle"></div><div class="s" id="miniArtist"></div></div>
+  <button class="icon-btn" data-action="toggle" id="miniPlay" aria-label="Play or pause"></button>
+  <button class="icon-btn" data-action="next" aria-label="Next" data-icon="next"></button>
+  <div class="mini-progress"><div id="miniBar"></div></div>
+</div>
+
+<nav class="tabs">
+  <button data-tab="songs"><span data-icon="music"></span>Songs</button>
+  <button data-tab="liked"><span data-icon="heart"></span>Liked</button>
+  <button data-tab="playlists"><span data-icon="list"></span>Playlists</button>
+</nav>
+
+<section id="now" class="now" aria-hidden="true">
+  <div class="now-bg" id="nowBg"></div>
+  <div class="now-inner">
+    <div class="now-top">
+      <button class="icon-btn" data-action="close-now" aria-label="Close" data-icon="chev-down"></button>
+      <div class="now-label"><small>PLAYING FROM</small><div id="nowCtx"></div></div>
+      <button class="icon-btn" data-action="now-menu" aria-label="More" data-icon="dots"></button>
+    </div>
+    <div class="now-art-wrap"><div class="now-art" id="nowArt"></div></div>
+    <div class="now-meta">
+      <div class="meta"><div class="t" id="nowTitle"></div><div class="s" id="nowArtist"></div></div>
+      <button class="icon-btn" data-action="like-current" id="nowLike" aria-label="Like"></button>
+    </div>
+    <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Seek">
+    <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
+    <div class="controls">
+      <button class="icon-btn" data-action="shuffle" id="btnShuffle" aria-label="Shuffle" data-icon="shuffle"></button>
+      <button class="icon-btn big" data-action="prev" aria-label="Previous" data-icon="prev"></button>
+      <button class="play-btn" data-action="toggle" id="nowPlay" aria-label="Play or pause"></button>
+      <button class="icon-btn big" data-action="next" aria-label="Next" data-icon="next"></button>
+      <button class="icon-btn" data-action="repeat" id="btnRepeat" aria-label="Repeat" data-icon="repeat"></button>
+    </div>
+  </div>
+</section>
+
+<div id="sheet" class="sheet-wrap hidden"></div>
+<div id="toast" class="toast hidden"></div>
+
+<input type="file" id="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.aiff,.aif,.ogg,.opus" multiple hidden>
+<audio id="audio" playsinline preload="auto"></audio>
+<script type="module" src="app.js"></script>
+</body>
+</html>
