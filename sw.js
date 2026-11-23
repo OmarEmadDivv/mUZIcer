@@ -1,5 +1,5 @@
 // Caches the app shell so Muzicer opens offline. Your songs live in IndexedDB, not here.
-const CACHE = 'muzicer-v1';
+const CACHE = 'muzicer-v2';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'db.js', 'tags.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

@@ -5,7 +5,9 @@ import { readTags, titleFromFilename } from './tags.js';
 const $ = (s) => document.querySelector(s);
 const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (t) => { if (!isFinite(t) || t < 0) t = 0; const m = Math.floor(t / 60); const s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, '0')}`; };
-const fmtLong = (t) => { const m = Math.round(t / 60); return m >= 60 ? `${Math.floor(m / 60)} hr ${m % 60} min` : `${m} min`; };
+const fmtT = (t) => { if (!isFinite(t) || t < 0) t = 0; const m = Math.floor(t / 60); const s = t - m * 60; return `${m}:${s.toFixed(1).padStart(4, '0')}`; };
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const fmtLong =(t) => { const m = Math.round(t / 60); return m >= 60 ? `${Math.floor(m / 60)} hr ${m % 60} min` : `${m} min`; };
 const fmtSize = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6) + ' MB');
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -41,6 +43,7 @@ const ICONS = {
   x: P_('M18 6L6 18M6 6l12 12'),
   queue: P_('M3 6h13M3 12h13M3 18h8M17 14v8M21 18h-8'),
   share: P_('M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13'),
+  scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>' + P_('M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12'),
 };
 const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
 
@@ -60,6 +63,17 @@ let seeking = false;
 
 const songById = (id) => S.songs.find((s) => s.id === id);
 const curId = () => P.queue[P.idx];
+// Several songs can share one audio file (trimmed copies), so songs point at a fileId.
+const fileIdOf = (s) => s.fileId || s.id;
+// The part of a song that actually plays (trimStart/trimEnd are in seconds, 0 = not trimmed).
+function rangeOf(s) {
+  if (!s) return { start: 0, end: 0, len: 0 };
+  const full = s.id === loadedId && isFinite(audio.duration) && audio.duration > 0 ? audio.duration : s.duration || 0;
+  const start = full ? Math.min(s.trimStart || 0, full) : s.trimStart || 0;
+  const end = s.trimEnd && (!full || s.trimEnd <= full) ? s.trimEnd : full;
+  return { start, end, len: Math.max(0, end - start) };
+}
+const isTrimmed = (s) => !!(s.trimStart || s.trimEnd);
 const SORT_LABEL = { recent: 'Recently added', title: 'Title', artist: 'Artist' };
 
 function artUrl(s) {
@@ -101,7 +115,8 @@ function ctxLabel(ctx) {
 }
 
 function rowHtml(s, ctx) {
-  const sub = `${s.liked ? icon('heart-fill', 'mini-heart') : ''}${esc(s.artist || 'Unknown artist')}${s.duration ? ' · ' + fmt(s.duration) : ''}`;
+  const len = rangeOf(s).len;
+  const sub = `${s.liked ? icon('heart-fill', 'mini-heart') : ''}${isTrimmed(s) ? icon('scissors', 'mini-heart') : ''}${esc(s.artist || 'Unknown artist')}${len ? ' · ' + fmt(len) : ''}`;
   return `<li class="row${s.id === loadedId ? ' playing' : ''}" data-action="play" data-id="${s.id}" data-ctx="${ctx}">
     ${artHtml(s)}
     <div class="meta"><div class="t">${esc(s.title)}</div><div class="s">${sub}</div></div>
@@ -172,7 +187,7 @@ function renderPlaylist() {
   const p = S.playlists.find((x) => x.id === S.playlist);
   const ctx = 'pl:' + p.id;
   const songs = contextList(ctx);
-  const dur = songs.reduce((a, s) => a + (s.duration || 0), 0);
+  const dur = songs.reduce((a, s) => a + rangeOf(s).len, 0);
   $('#title').textContent = '';
   $('#main').innerHTML = `
     <button class="back" data-action="back">${icon('chev-left')} Playlists</button>
@@ -194,7 +209,11 @@ function highlightRows() {
 }
 
 /* ================= sheets / dialogs ================= */
-function sheet({ title, subtitle, art, items = [], body = '', onMount }) {
+let sheetOnClose = null;
+function runSheetOnClose() { const f = sheetOnClose; sheetOnClose = null; f?.(); }
+function sheet({ title, subtitle, art, items = [], body = '', onMount, onClose }) {
+  runSheetOnClose();
+  sheetOnClose = onClose || null;
   const w = $('#sheet');
   w.innerHTML = `<div class="sheet-backdrop"></div><div class="sheet" role="dialog" aria-modal="true">
     <div class="grabber"></div>
@@ -210,6 +229,7 @@ function sheet({ title, subtitle, art, items = [], body = '', onMount }) {
   onMount?.(w);
 }
 function closeSheet() {
+  runSheetOnClose();
   const w = $('#sheet');
   w.classList.remove('open');
   setTimeout(() => { if (!w.classList.contains('open')) { w.classList.add('hidden'); w.innerHTML = ''; } }, 260);
@@ -249,6 +269,7 @@ function songMenu(id, ctx) {
     { label: 'Add to queue', icon: 'queue', fn: () => addToQueue(id) },
     { label: s.liked ? 'Remove from Liked' : 'Add to Liked', icon: s.liked ? 'heart-fill' : 'heart', fn: () => toggleLike(id) },
     { label: 'Add to playlist…', icon: 'list', fn: () => pickPlaylist(id) },
+    { label: isTrimmed(s) ? 'Edit trim…' : 'Trim…', icon: 'scissors', fn: () => trimEditor(id) },
     { label: 'Edit info…', icon: 'edit', fn: () => editSong(id) },
   ];
   if (ctx?.startsWith('pl:')) items.push({ label: 'Remove from this playlist', icon: 'minus', fn: () => removeFromPlaylist(ctx.slice(3), id) });
@@ -286,9 +307,13 @@ function editSong(id) {
 async function deleteSong(id) {
   const wasCurrent = id === loadedId;
   const wasPlaying = wasCurrent && !audio.paused;
+  const victim = songById(id);
+  if (!victim) return;
+  const fid = fileIdOf(victim);
   S.songs = S.songs.filter((s) => s.id !== id);
   await db.del('songs', id);
-  await db.del('files', id);
+  // only delete the audio if no trimmed copy still uses it
+  if (!S.songs.some((s) => fileIdOf(s) === fid)) { await db.del('files', fid); peakCache.delete(fid); }
   for (const p of S.playlists) {
     if (p.songIds.includes(id)) { p.songIds = p.songIds.filter((x) => x !== id); await db.put('playlists', p); }
   }
@@ -495,17 +520,18 @@ async function loadAndPlay(autoplay = true) {
   const s = songById(id);
   if (!s) return;
   const token = ++loadToken;
-  const blob = await db.get('files', id);
+  const blob = await db.get('files', fileIdOf(s));
   if (token !== loadToken) return;
   if (!blob) { toast(`Audio file missing for “${s.title}”`); return; }
   if (curUrl) URL.revokeObjectURL(curUrl);
   curUrl = URL.createObjectURL(blob);
   loadedId = id;
+  endedFor = null;
   audio.src = curUrl;
-  if (P.resumeAt) {
-    const t = P.resumeAt;
-    P.resumeAt = 0;
-    audio.addEventListener('loadedmetadata', () => { try { audio.currentTime = t; } catch { /* ignore */ } }, { once: true });
+  const startAt = Math.max(P.resumeAt || 0, s.trimStart || 0);
+  P.resumeAt = 0;
+  if (startAt) {
+    audio.addEventListener('loadedmetadata', () => { try { audio.currentTime = startAt; } catch { /* ignore */ } }, { once: true });
   }
   updateNowPlaying();
   highlightRows();
@@ -521,16 +547,17 @@ function toggle() {
 }
 function next(auto = false) {
   if (!P.queue.length) return;
-  if (auto && P.repeat === 'one') { audio.currentTime = 0; audio.play().catch(() => {}); return; }
+  if (auto && P.repeat === 'one') { endedFor = null; audio.currentTime = rangeOf(songById(loadedId)).start; audio.play().catch(() => {}); return; }
   if (P.idx < P.queue.length - 1) P.idx++;
   else if (P.repeat === 'all' || !auto) P.idx = 0;
-  else { audio.pause(); audio.currentTime = 0; updatePlayState(); return; }
+  else { audio.pause(); audio.currentTime = rangeOf(songById(loadedId)).start; endedFor = null; updatePlayState(); return; }
   P.resumeAt = 0;
   loadAndPlay();
 }
 function prev() {
   if (!P.queue.length) return;
-  if (audio.currentTime > 3 || (P.idx === 0 && P.repeat !== 'all')) { audio.currentTime = 0; return; }
+  const r = rangeOf(songById(loadedId));
+  if (audio.currentTime - r.start > 3 || (P.idx === 0 && P.repeat !== 'all')) { audio.currentTime = r.start; endedFor = null; return; }
   P.idx = P.idx > 0 ? P.idx - 1 : P.queue.length - 1;
   P.resumeAt = 0;
   loadAndPlay();
@@ -574,6 +601,243 @@ function showQueue() {
   });
 }
 
+/* ================= trim editor ================= */
+const peakCache = new Map();
+// Decode at a low sample rate so long songs don't eat the iPhone's memory.
+async function decodeLow(ab) {
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (OAC) {
+    try { const oc = new OAC(1, 1, 8000); return await new Promise((res, rej) => oc.decodeAudioData(ab.slice(0), res, rej)); } catch { /* fall back */ }
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
+  try { return await new Promise((res, rej) => ac.decodeAudioData(ab, res, rej)); } finally { try { ac.close(); } catch { /* ignore */ } }
+}
+async function peaksFor(fid, blob) {
+  if (peakCache.has(fid)) return peakCache.get(fid);
+  const buf = await decodeLow(await blob.arrayBuffer());
+  const n = 1000, ch = buf.getChannelData(0);
+  const block = Math.max(1, Math.floor(ch.length / n));
+  const stride = Math.max(1, Math.floor(block / 64));
+  const peaks = new Float32Array(n);
+  let max = 0;
+  for (let i = 0; i < n; i++) {
+    let m = 0;
+    for (let j = 0, o = i * block; j < block; j += stride) { const v = Math.abs(ch[o + j] || 0); if (v > m) m = v; }
+    peaks[i] = m;
+    if (m > max) max = m;
+  }
+  if (max > 0) for (let i = 0; i < n; i++) peaks[i] /= max;
+  const r = { peaks, duration: buf.duration };
+  peakCache.set(fid, r);
+  return r;
+}
+
+async function trimEditor(id) {
+  const s = songById(id);
+  if (!s) return;
+  const blob = await db.get('files', fileIdOf(s));
+  if (!blob) return toast('Audio file missing');
+  const url = URL.createObjectURL(blob);
+  const pa = new Audio();
+  pa.preload = 'auto';
+  pa.setAttribute('playsinline', '');
+  pa.src = url;
+  let dur = 0, raf = 0;
+  const st = { start: s.trimStart || 0, end: s.trimEnd || 0, head: s.trimStart || 0, peaks: null };
+  const STEP = 0.1;
+
+  const body = `<div class="trim">
+    <div class="trim-wave"><canvas></canvas><div class="trim-loading">Loading waveform…</div></div>
+    <p class="trim-hint">Drag the white handles to keep only the part you want. Tap the wave to move the playhead.</p>
+    <div class="trim-times">
+      <div class="tt"><small>Start</small><div class="nudge"><button data-n="s-" aria-label="Start earlier">−</button><b data-v="s"></b><button data-n="s+" aria-label="Start later">+</button></div></div>
+      <div class="tt mid"><small>Length</small><b data-v="l"></b></div>
+      <div class="tt end"><small>End</small><div class="nudge"><button data-n="e-" aria-label="End earlier">−</button><b data-v="e"></b><button data-n="e+" aria-label="End later">+</button></div></div>
+    </div>
+    <div class="trim-play">
+      <button class="btn" data-p="start">${icon('play')} From start</button>
+      <button class="play-btn sm" data-p="toggle" aria-label="Play or pause preview"></button>
+      <button class="btn" data-p="end">Hear ending</button>
+    </div>
+    <div class="form-actions">
+      <button class="btn" data-a="reset">Reset</button>
+      <button class="btn" data-a="copy">Save as copy</button>
+      <button class="btn primary" data-a="save">Save</button>
+    </div>
+  </div>`;
+
+  sheet({
+    title: isTrimmed(s) ? 'Edit trim' : 'Trim song', subtitle: s.title, body,
+    onClose() { cancelAnimationFrame(raf); pa.pause(); pa.removeAttribute('src'); pa.load(); URL.revokeObjectURL(url); },
+    onMount(w) {
+      const q = (sel) => w.querySelector(sel);
+      const wave = q('.trim-wave'), cv = q('canvas'), ctx = cv.getContext('2d');
+      const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#2ee6a6';
+      const PAD = 12;
+      const minLen = () => Math.min(1, dur / 2);
+      const xOf = (t) => PAD + (dur ? t / dur : 0) * (wave.clientWidth - PAD * 2);
+      const tOf = (x) => clamp((x - PAD) / (wave.clientWidth - PAD * 2), 0, 1) * dur;
+      const setT = (t) => { if (pa.readyState >= 1) pa.currentTime = t; else pa.addEventListener('loadedmetadata', () => { pa.currentTime = t; }, { once: true }); };
+
+      function draw() {
+        const dpr = window.devicePixelRatio || 1, W = wave.clientWidth, H = wave.clientHeight;
+        if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, W, H);
+        const inner = W - PAD * 2, bars = Math.floor(inner / 3), n = st.peaks?.length || 0;
+        for (let i = 0; i < bars; i++) {
+          const f = i / bars, t = f * dur;
+          const v = n ? st.peaks[Math.floor(f * n)] : 0.12;
+          const h = Math.max(2, v * (H - 28));
+          ctx.fillStyle = t >= st.start && t <= st.end ? accent : 'rgba(255,255,255,0.18)';
+          ctx.fillRect(PAD + i * 3, (H - h) / 2, 2, h);
+        }
+        if (!dur) return;
+        if (!pa.paused || (st.head > st.start + 0.05 && st.head < st.end)) {
+          ctx.fillStyle = 'rgba(255,255,255,0.75)';
+          ctx.fillRect(xOf(st.head) - 1, 6, 2, H - 12);
+        }
+        for (const t of [st.start, st.end]) {
+          const x = xOf(t);
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(x - 1.5, 0, 3, H);
+          for (const y of [8, H - 8]) { ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill(); }
+        }
+      }
+      function update() {
+        q('[data-v="s"]').textContent = fmtT(st.start);
+        q('[data-v="e"]').textContent = fmtT(st.end);
+        q('[data-v="l"]').textContent = fmtT(st.end - st.start);
+        q('[data-p="toggle"]').innerHTML = icon(pa.paused ? 'play' : 'pause');
+        draw();
+      }
+      function gotDuration(d) {
+        if (!d || !isFinite(d) || dur) return;
+        dur = d;
+        if (!st.end || st.end > dur) st.end = dur;
+        st.start = clamp(st.start, 0, Math.max(0, st.end - minLen()));
+        st.head = st.start;
+        update();
+      }
+      gotDuration(s.duration);
+      pa.addEventListener('loadedmetadata', () => gotDuration(pa.duration));
+      pa.addEventListener('play', update);
+      pa.addEventListener('pause', update);
+      peaksFor(fileIdOf(s), blob)
+        .then((r) => { st.peaks = r.peaks; gotDuration(r.duration); q('.trim-loading')?.remove(); draw(); })
+        .catch(() => { const l = q('.trim-loading'); if (l) l.textContent = 'No waveform for this file, but the handles still work'; });
+
+      function loop() {
+        cancelAnimationFrame(raf);
+        const tick = () => {
+          if (pa.paused) { update(); return; }
+          st.head = pa.currentTime;
+          if (st.head >= st.end) { pa.pause(); st.head = st.start; update(); return; }
+          draw();
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+      }
+      function playFrom(t) {
+        if (!dur) return;
+        audio.pause();
+        st.head = t;
+        setT(t);
+        pa.play().catch(() => {});
+        loop();
+      }
+
+      // dragging handles / moving the playhead
+      let drag = null;
+      function move(e) {
+        if (!dur) return;
+        const t = tOf(e.clientX - wave.getBoundingClientRect().left);
+        if (drag === 'start') { st.start = clamp(t, 0, st.end - minLen()); if (pa.paused) st.head = st.start; }
+        else if (drag === 'end') st.end = clamp(t, st.start + minLen(), dur);
+        else st.head = clamp(t, st.start, st.end);
+        update();
+      }
+      wave.addEventListener('pointerdown', (e) => {
+        if (!dur) return;
+        const x = e.clientX - wave.getBoundingClientRect().left;
+        const ds = Math.abs(x - xOf(st.start)), de = Math.abs(x - xOf(st.end));
+        if (Math.min(ds, de) < 30) drag = ds < de || (ds === de && x < xOf(st.start)) ? 'start' : 'end';
+        else drag = 'head';
+        wave.setPointerCapture?.(e.pointerId);
+        move(e);
+      });
+      wave.addEventListener('pointermove', (e) => { if (drag) move(e); });
+      const endDrag = () => {
+        if (!drag) return;
+        if (!pa.paused) {
+          if (drag === 'head') setT(st.head);
+          else if (drag === 'start') { st.head = st.start; setT(st.start); }
+          else if (pa.currentTime >= st.end) { pa.pause(); st.head = st.start; }
+        }
+        drag = null;
+        update();
+      };
+      wave.addEventListener('pointerup', endDrag);
+      wave.addEventListener('pointercancel', endDrag);
+
+      q('.trim-times').addEventListener('click', (e) => {
+        const b = e.target.closest('[data-n]');
+        if (!b || !dur) return;
+        const d = b.dataset.n.endsWith('+') ? STEP : -STEP;
+        if (b.dataset.n[0] === 's') { st.start = clamp(st.start + d, 0, st.end - minLen()); if (pa.paused) st.head = st.start; }
+        else st.end = clamp(st.end + d, st.start + minLen(), dur);
+        update();
+      });
+      q('.trim-play').addEventListener('click', (e) => {
+        const b = e.target.closest('[data-p]');
+        if (!b) return;
+        const p = b.dataset.p;
+        if (p === 'start') playFrom(st.start);
+        else if (p === 'end') playFrom(Math.max(st.start, st.end - 3));
+        else if (!pa.paused) pa.pause();
+        else playFrom(st.head >= st.start && st.head < st.end - 0.05 ? st.head : st.start);
+      });
+
+      const result = () => ({
+        trimStart: st.start > 0.05 ? +st.start.toFixed(2) : 0,
+        trimEnd: st.end < dur - 0.05 ? +st.end.toFixed(2) : 0,
+      });
+      q('.form-actions').addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-a]');
+        if (!b || !dur) return;
+        const a = b.dataset.a;
+        if (a === 'reset') { st.start = 0; st.end = dur; st.head = 0; update(); return; }
+        if (a === 'save') {
+          Object.assign(s, result());
+          if (!s.duration) s.duration = dur;
+          await saveSong(s);
+          closeSheet();
+          if (s.id === loadedId) {
+            const r = rangeOf(s);
+            if (audio.currentTime < r.start || audio.currentTime >= r.end) audio.currentTime = r.start;
+            endedFor = null;
+            updateProgress();
+            updatePosition();
+          }
+          render();
+          toast(isTrimmed(s) ? 'Trim saved' : 'Trim removed');
+        } else if (a === 'copy') {
+          const r = result();
+          if (!r.trimStart && !r.trimEnd) return toast('Move the handles first');
+          const c = { ...s, ...r, id: uid(), fileId: fileIdOf(s), title: s.title + ' (cut)', duration: s.duration || dur, addedAt: Date.now(), liked: false };
+          await db.put('songs', c);
+          S.songs.push(c);
+          closeSheet();
+          render();
+          toast('Saved as a new song');
+        }
+      });
+      update();
+    },
+  });
+}
+
 /* ================= now playing UI ================= */
 function updateNowPlaying() {
   const s = songById(curId());
@@ -594,13 +858,15 @@ function updateNowPlaying() {
   like.innerHTML = icon(s.liked ? 'heart-fill' : 'heart');
   like.classList.toggle('on', !!s.liked);
   if (!loadedId && s.duration) {
-    const p = Math.min(1, (P.resumeAt || 0) / s.duration);
+    const r = rangeOf(s);
+    const rel = clamp((P.resumeAt || 0) - r.start, 0, r.len);
+    const p = r.len ? rel / r.len : 0;
     $('#miniBar').style.width = p * 100 + '%';
     seek.value = Math.round(p * 1000);
-    $('#tCur').textContent = fmt(P.resumeAt || 0);
-    $('#tDur').textContent = fmt(s.duration);
+    $('#tCur').textContent = fmt(rel);
+    $('#tDur').textContent = fmt(r.len);
     setFill();
-  }
+  } else if (loadedId) updateProgress();
   setMediaMeta(s);
 }
 
@@ -621,25 +887,26 @@ function updateModes() {
 const setFill = () => seek.style.setProperty('--p', seek.value / 10 + '%');
 function updateProgress() {
   if (!loadedId) return;
-  const d = audio.duration, t = audio.currentTime;
-  const p = isFinite(d) && d > 0 ? t / d : 0;
+  const r = rangeOf(songById(loadedId));
+  const rel = clamp(audio.currentTime - r.start, 0, r.len);
+  const p = r.len ? rel / r.len : 0;
   $('#miniBar').style.width = p * 100 + '%';
-  if (!seeking) { seek.value = Math.round(p * 1000); $('#tCur').textContent = fmt(t); setFill(); }
-  $('#tDur').textContent = fmt(isFinite(d) ? d : songById(loadedId)?.duration || 0);
+  if (!seeking) { seek.value = Math.round(p * 1000); $('#tCur').textContent = fmt(rel); setFill(); }
+  $('#tDur').textContent = fmt(r.len);
 }
 function openNow() { $('#now').classList.add('open'); $('#now').setAttribute('aria-hidden', 'false'); document.body.classList.add('now-open'); }
 function closeNow() { $('#now').classList.remove('open'); $('#now').setAttribute('aria-hidden', 'true'); document.body.classList.remove('now-open'); }
 
 seek.addEventListener('input', () => {
   seeking = true;
-  const d = isFinite(audio.duration) ? audio.duration : songById(curId())?.duration || 0;
-  $('#tCur').textContent = fmt((seek.value / 1000) * d);
+  $('#tCur').textContent = fmt((seek.value / 1000) * rangeOf(songById(curId())).len);
   setFill();
 });
 seek.addEventListener('change', () => {
   const frac = seek.value / 1000;
-  if (loadedId && isFinite(audio.duration)) audio.currentTime = frac * audio.duration;
-  else { const s = songById(curId()); if (s?.duration) P.resumeAt = frac * s.duration; }
+  const r = rangeOf(songById(curId()));
+  if (loadedId && isFinite(audio.duration)) { audio.currentTime = r.start + frac * r.len; endedFor = null; }
+  else if (r.len) P.resumeAt = r.start + frac * r.len;
   seeking = false;
   updatePosition();
 });
@@ -671,9 +938,10 @@ async function setMediaMeta(s) {
 function updatePosition() {
   const ms = navigator.mediaSession;
   if (!ms?.setPositionState) return;
-  const d = audio.duration;
-  if (!isFinite(d) || d <= 0) return;
-  try { ms.setPositionState({ duration: d, playbackRate: audio.playbackRate || 1, position: Math.min(audio.currentTime, d) }); } catch { /* ignore */ }
+  if (!loadedId || !isFinite(audio.duration) || audio.duration <= 0) return;
+  const r = rangeOf(songById(loadedId));
+  if (!r.len) return;
+  try { ms.setPositionState({ duration: r.len, playbackRate: audio.playbackRate || 1, position: clamp(audio.currentTime - r.start, 0, r.len) }); } catch { /* ignore */ }
 }
 if ('mediaSession' in navigator) {
   const h = (a, f) => { try { navigator.mediaSession.setActionHandler(a, f); } catch { /* unsupported */ } };
@@ -681,16 +949,23 @@ if ('mediaSession' in navigator) {
   h('pause', () => audio.pause());
   h('previoustrack', prev);
   h('nexttrack', () => next(false));
-  h('seekto', (d) => { audio.currentTime = d.seekTime; updatePosition(); });
+  h('seekto', (d) => { audio.currentTime = rangeOf(songById(loadedId)).start + d.seekTime; endedFor = null; updatePosition(); });
 }
 
 /* ================= audio events ================= */
 let lastSave = 0;
+let endedFor = null; // guards against firing "end of trimmed song" twice
 audio.addEventListener('play', () => { updatePlayState(); updatePosition(); });
 audio.addEventListener('pause', () => { updatePlayState(); updatePosition(); saveSession(); });
-audio.addEventListener('ended', () => next(true));
+audio.addEventListener('ended', () => { if (endedFor !== loadedId) next(true); });
 audio.addEventListener('seeked', updatePosition);
 audio.addEventListener('timeupdate', () => {
+  const s = songById(loadedId);
+  if (s?.trimEnd && !audio.paused && audio.currentTime >= s.trimEnd - 0.05 && endedFor !== loadedId) {
+    endedFor = loadedId;
+    next(true);
+    return;
+  }
   updateProgress();
   const now = Date.now();
   if (now - lastSave > 5000) { lastSave = now; saveSession(); }
@@ -763,6 +1038,7 @@ document.addEventListener('click', (e) => {
         items: [
           { label: 'Up next', icon: 'queue', fn: showQueue },
           { label: 'Add to playlist…', icon: 'list', fn: () => pickPlaylist(cid) },
+          { label: isTrimmed(s) ? 'Edit trim…' : 'Trim…', icon: 'scissors', fn: () => trimEditor(cid) },
           { label: 'Edit info…', icon: 'edit', fn: () => editSong(cid) },
         ],
       });
